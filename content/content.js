@@ -69,7 +69,7 @@
   }
 
   function getCachedAnswer(q) {
-    if (!q) return null;
+    if (!q || !q.text) return null;
 
     // Tier 1: Exact normalized text match
     const textKey = normalizeKey(q.text);
@@ -84,15 +84,26 @@
           if (k.includes(textKey) || textKey.includes(k)) {
             return ans;
           }
+          if (calculateSimilarity(k, textKey) >= 0.75) {
+            return ans;
+          }
         }
       }
     }
 
-    // Tier 3: Question number fallback
+    // Tier 3: Question number fallback ONLY IF STEM MATCHES!
     if (q.number) {
       const numKey = `q_num_${q.number}`;
       if (answerCache.has(numKey)) {
-        return answerCache.get(numKey);
+        const cachedAns = answerCache.get(numKey);
+        if (cachedAns && (cachedAns.question_stem || cachedAns.stem)) {
+          const stemToCompare = cachedAns.question_stem || cachedAns.stem;
+          const sim = calculateSimilarity(cleanStem(stemToCompare), cleanStem(q.text));
+          if (sim >= 0.45) {
+            return cachedAns;
+          }
+          console.warn(`[Canvas AI] Cache Tier 3 rejected: q_num_${q.number} stem mismatch (similarity ${sim.toFixed(2)})`);
+        }
       }
     }
 
@@ -191,8 +202,14 @@
       if (bestOpt) return bestOpt;
     }
 
-    // 4. Fallback to index if in range
+    // 4. Fallback to index ONLY if question stem is verified to match!
+    const stemToCompare = ans.question_stem || ans.stem;
+    const isSameQuestion = stemToCompare
+      ? calculateSimilarity(cleanStem(stemToCompare), cleanStem(q.text)) >= 0.45
+      : false;
+
     if (
+      isSameQuestion &&
       typeof ans.selected_option_index === 'number' &&
       ans.selected_option_index >= 0 &&
       ans.selected_option_index < q.options.length
@@ -238,6 +255,94 @@
     return groups.size > 1 ? 'ALL_IN_ONE' : 'ONE_AT_A_TIME';
   }
 
+  // --- ROBUST QUESTION NUMBER EXTRACTION (LEARNOSITY / CANVAS NEW QUIZZES COMPLIANT) ---
+  function extractQuestionNumber(container, defaultNum = 1) {
+    // 1. Learnosity / Canvas New Quizzes explicit selectors
+    const lrnSelectors = [
+      '.lrn_question_number',
+      '.item-count',
+      '.item-index',
+      '[data-item-order]',
+      '[data-question-order]',
+      '[data-question-number]',
+      '.question-number',
+      '.badge-number'
+    ];
+    for (const sel of lrnSelectors) {
+      const el = (container && container.querySelector(sel)) || document.querySelector(sel);
+      if (el) {
+        const txt = (el.innerText || el.getAttribute('data-item-order') || el.getAttribute('data-question-order') || '').trim();
+        const n = parseInt(txt, 10);
+        if (!isNaN(n) && n >= 1 && n <= 200) return n;
+      }
+    }
+
+    // 2. Search for the badge element preceding "Multiple choice ... points" or "คะแนน"
+    const pointsTargets = (container || document).querySelectorAll('span, div, p');
+    for (const el of pointsTargets) {
+      const txt = (el.innerText || '').trim();
+      if (/^(Multiple choice|หลายตัวเลือก)/i.test(txt) || /points?|คะแนน/i.test(txt)) {
+        // Look at previous siblings
+        let prev = el.previousElementSibling;
+        while (prev) {
+          const prevTxt = (prev.innerText || '').trim();
+          if (/^\d+$/.test(prevTxt)) {
+            const n = parseInt(prevTxt, 10);
+            if (n >= 1 && n <= 200) return n;
+          }
+          prev = prev.previousElementSibling;
+        }
+        // Look at parent children
+        if (el.parentElement) {
+          for (const child of el.parentElement.children) {
+            const cTxt = (child.innerText || '').trim();
+            if (/^\d+$/.test(cTxt)) {
+              const n = parseInt(cTxt, 10);
+              if (n >= 1 && n <= 200) return n;
+            }
+          }
+        }
+      }
+    }
+
+    // 3. Search container for badge-like numbers
+    if (container) {
+      const badgeCandidates = container.querySelectorAll('[class*="question-number"], [class*="badge"], [class*="number"], [aria-label*="Question"], [aria-label*="ข้อ"], span, div');
+      for (const badge of badgeCandidates) {
+        const txt = (badge.innerText || '').trim();
+        if (badge.children.length === 0 && /^\d+$/.test(txt)) {
+          const val = parseInt(txt, 10);
+          if (val >= 1 && val <= 200) return val;
+        }
+        const m = txt.match(/^(?:question|ข้อที่|ข้อ)?\s*(\d+)[:\.]?$/i);
+        if (m) {
+          const val = parseInt(m[1], 10);
+          if (val >= 1 && val <= 200) return val;
+        }
+      }
+    }
+
+    // 4. In ONE_AT_A_TIME mode, search globally for standalone badges
+    const mode = detectQuizMode();
+    if (mode === 'ONE_AT_A_TIME') {
+      const allCandidates = Array.from(document.querySelectorAll('button, span, div'));
+      for (const el of allCandidates) {
+        if (el.children.length === 0) {
+          const txt = (el.innerText || '').trim();
+          if (/^\d+$/.test(txt) && txt.length <= 3) {
+            const val = parseInt(txt, 10);
+            const rect = el.getBoundingClientRect();
+            if (rect.top > 0 && rect.top < window.innerHeight * 0.5 && val >= 1 && val <= 200) {
+              return val;
+            }
+          }
+        }
+      }
+    }
+
+    return defaultNum;
+  }
+
   // --- UNIVERSAL MULTI-QUESTION SCRAPER ---
   async function scrapeAllQuestionsOnPage() {
     const radioInputs = Array.from(document.querySelectorAll('input[type="radio"]')).filter(
@@ -250,11 +355,14 @@
 
     radioInputs.forEach((r) => {
       const container =
+        r.closest('.lrn-item-wrapper') ||
+        r.closest('.lrn_item') ||
+        r.closest('.lrn_question') ||
         r.closest('[data-automation="question-item"]') ||
-        r.closest('fieldset') ||
-        r.closest('[role="radiogroup"]') ||
         r.closest('.display_question') ||
         r.closest('.question_holder') ||
+        r.closest('fieldset') ||
+        r.closest('[role="radiogroup"]') ||
         r.closest('form') ||
         r.parentElement.parentElement;
 
@@ -332,27 +440,7 @@
       }
 
       // Determine Question Number reliably
-      let qNum = sequentialIndex;
-      // Search for standalone question badge (e.g. black box with "1", "2", "3")
-      const badgeCandidates = container.querySelectorAll('[class*="question-number"], [class*="badge"], [class*="number"], [aria-label*="Question"], [aria-label*="ข้อ"], span, div');
-      for (const badge of badgeCandidates) {
-        const txt = badge.innerText ? badge.innerText.trim() : '';
-        if (badge.children.length === 0 && /^\d+$/.test(txt)) {
-          const val = parseInt(txt);
-          if (val >= 1 && val <= 100) {
-            qNum = val;
-            break;
-          }
-        }
-        const m = txt.match(/^(?:question|ข้อที่)?\s*(\d+)$/i);
-        if (m) {
-          const val = parseInt(m[1]);
-          if (val >= 1 && val <= 100) {
-            qNum = val;
-            break;
-          }
-        }
-      }
+      const qNum = extractQuestionNumber(container, sequentialIndex);
 
       questions.push({
         number: qNum,
@@ -444,7 +532,9 @@
   function applySingleHighlight(q, ans) {
     clearHighlights();
     if (!q || !ans) return;
-    const targetOpt = typeof ans === 'object' ? findMatchingOption(q, ans) : q.options[ans];
+    const ansObj = typeof ans === 'object' ? ans : null;
+    if (!ansObj) return;
+    const targetOpt = findMatchingOption(q, ansObj);
     if (targetOpt && targetOpt.targetElement) {
       const target = targetOpt.targetElement;
       target.style.setProperty('box-shadow', '0 0 20px rgba(16, 185, 129, 0.95)', 'important');
@@ -480,11 +570,99 @@
             applyAllHighlightsOnPage();
           } else if (currentQuestion) {
             const ans = getCachedAnswer(currentQuestion);
-            if (ans) applySingleHighlight(currentQuestion, ans.selected_option_index);
+            if (ans) applySingleHighlight(currentQuestion, ans);
           }
         }
       }
     }, 1500);
+  }
+
+  // --- SINGLE QUESTION SOLVER (INSTANT 1-QUESTION SOLVE) ---
+  async function solveCurrentQuestionOnly() {
+    await refreshQuestionsOnPage();
+    if (!currentQuestion || !currentQuestion.text) {
+      updateStatus('⚠️ ไม่พบโจทย์ข้อสอบบนหน้านี้ กรุณาตรวจสอบหน้าจอ Canvas', true);
+      return;
+    }
+
+    const q = currentQuestion;
+    updateStatus(`🔍 กำลังตรวจสอบข้อที่ ${q.number}...`);
+
+    // Check cache first
+    const cached = getCachedAnswer(q);
+    if (cached) {
+      updateStatus(`⚡ ข้อที่ ${q.number} มีคำตอบใน Cache แล้ว!`);
+      applySingleHighlight(q, cached);
+      renderSingleResult(cached, q, true);
+      if (currentMode === 'autoclick') {
+        const opt = findMatchingOption(q, cached);
+        if (opt && opt.targetElement) await performClick(opt.targetElement);
+      }
+      return;
+    }
+
+    // Not in cache -> Send to AI
+    updateStatus(`🚀 กำลังส่งข้อที่ ${q.number} ให้ AI วิเคราะห์สด...`);
+    const solveBtn = shadowRoot?.getElementById('solve-current-btn');
+    if (solveBtn) {
+      solveBtn.disabled = true;
+      solveBtn.innerText = '⏳ กำลังวิเคราะห์...';
+    }
+
+    const payload = {
+      questions: [
+        {
+          index: q.number,
+          text: q.text,
+          options: q.options.map((o) => ({ index: o.index, text: o.text })),
+          images: q.images
+        }
+      ]
+    };
+
+    try {
+      const response = await new Promise((resolve) => {
+        chrome.runtime.sendMessage({ action: 'SOLVE_QUIZ', payload }, resolve);
+      });
+
+      if (!response || !response.success) {
+        updateStatus(response?.error || 'เกิดข้อผิดพลาดในการวิเคราะห์ข้อนี้', true);
+        return;
+      }
+
+      const answers = response.data?.answers || [];
+      const ans = answers[0];
+      if (ans) {
+        ans.question_stem = q.text;
+        ans.question_number = q.number;
+
+        const textKey = normalizeKey(q.text);
+        const numKey = `q_num_${q.number}`;
+        const batchMap = {};
+        batchMap[textKey] = ans;
+        batchMap[numKey] = ans;
+        saveBatchToCache(batchMap);
+
+        applySingleHighlight(q, ans);
+        renderSingleResult(ans, q, false);
+
+        if (currentMode === 'autoclick') {
+          const opt = findMatchingOption(q, ans);
+          if (opt && opt.targetElement) await performClick(opt.targetElement);
+        }
+
+        updateStatus(`🎉 วิเคราะห์ข้อที่ ${q.number} สำเร็จ (${ans.confidence || '99%'})!`);
+      } else {
+        updateStatus('AI ไม่ได้ส่งคำตอบกลับมาสำหรับข้อนี้', true);
+      }
+    } catch (err) {
+      updateStatus(`ข้อผิดพลาด: ${err.message}`, true);
+    } finally {
+      if (solveBtn) {
+        solveBtn.disabled = false;
+        solveBtn.innerText = '⚡ วิเคราะห์ข้อนี้ทันที';
+      }
+    }
   }
 
   // --- SMART BATCH SOLVER (HANDLES BOTH SINGLE-PAGE & MULTI-PAGE) ---
@@ -518,18 +696,21 @@
         if (!isHarvesting) break;
         updateStatus(`⚡ กำลังกวาดข้อสอบ: ข้อที่ ${qNum}/${total}...`);
 
-        const navBtn = findQuestionNavButton(qNum);
-        if (navBtn) {
-          navBtn.click();
-        } else {
-          const nextBtn = Array.from(document.querySelectorAll('button, a')).find(
-            (b) => b.innerText.toLowerCase().includes('next') || b.innerText.includes('ถัดไป')
-          );
-          if (nextBtn) nextBtn.click();
+        if (qNum > 1) {
+          const navBtn = findQuestionNavButton(qNum);
+          if (navBtn) {
+            navBtn.click();
+          } else {
+            const nextBtn = Array.from(document.querySelectorAll('button, a')).find(
+              (b) => b.innerText.toLowerCase().includes('next') || b.innerText.includes('ถัดไป')
+            );
+            if (nextBtn) nextBtn.click();
+          }
         }
 
-        const q = await waitForActiveQuestion(qNum);
+        const q = await waitForActiveQuestion(qNum, prevStem);
         if (q && q.text) {
+          prevStem = q.text;
           q.number = qNum;
           questionsToProcess.push(q);
         }
@@ -599,6 +780,9 @@
           answers.find((a) => parseInt(a.question_index) === idx + 1) ||
           answers[idx];
         if (ans) {
+          ans.question_stem = q.text;
+          ans.question_number = q.number;
+
           const textKey = normalizeKey(q.text);
           const numKey = `q_num_${q.number}`;
 
@@ -792,14 +976,22 @@
     });
   }
 
-  async function waitForActiveQuestion(expectedNum, maxWaitMs = 2000) {
+  async function waitForActiveQuestion(expectedNum, prevStem = '', maxWaitMs = 2500) {
     const start = Date.now();
     while (Date.now() - start < maxWaitMs) {
       const qList = await scrapeAllQuestionsOnPage();
       if (qList.length > 0) {
         const matching = qList.find((q) => q.number === expectedNum);
         if (matching) return matching;
-        if (Date.now() - start > 500) return qList[0];
+
+        // If prevStem was provided, make sure the DOM question has changed
+        if (prevStem && cleanStem(qList[0].text) === cleanStem(prevStem)) {
+          // Still on old question, keep waiting for DOM update
+          await new Promise((r) => setTimeout(r, 120));
+          continue;
+        }
+
+        if (Date.now() - start > 800) return qList[0];
       }
       await new Promise((r) => setTimeout(r, 120));
     }
@@ -1133,6 +1325,10 @@
         </div>
 
         <div class="drawer-body">
+          <button class="btn-primary" id="solve-current-btn" style="padding:14px; font-size:14px; border-radius:10px; background:linear-gradient(135deg, #10b981 0%, #059669 100%); box-shadow:0 4px 14px rgba(16, 185, 129, 0.4);">
+            <span>⚡ วิเคราะห์ข้อนี้ทันที (Solve Current Question)</span>
+          </button>
+
           <button class="btn-sweep" id="batch-sweep-btn">
             <span>🚀 กวาดโจทย์ทุกข้อ & ส่งวิเคราะห์ทีเดียว</span>
           </button>
@@ -1158,7 +1354,7 @@
             <span class="model-tag">${config.model === 'smart-hybrid' ? '⚡ Smart Hybrid (Jev + Grok)' : (config.model + ' (' + config.reasoningEffort + ')')}</span>
           </div>
 
-          <div class="status-text" id="status-display">พร้อมทำงาน • กดปุ่มสีน้ำเงินเพื่อเริ่มวิเคราะห์</div>
+          <div class="status-text" id="status-display">พร้อมทำงาน • กดปุ่มสีเขียวเพื่อวิเคราะห์ข้อนี้ทันที</div>
 
           <div class="results-container" id="results-box"></div>
 
@@ -1181,6 +1377,7 @@
     const fabBtn = root.getElementById('fab-btn');
     const drawer = root.getElementById('drawer');
     const closeBtn = root.getElementById('close-drawer');
+    const solveCurrentBtn = root.getElementById('solve-current-btn');
     const modeHighlight = root.getElementById('mode-highlight');
     const modeAutoclick = root.getElementById('mode-autoclick');
     const batchSweepBtn = root.getElementById('batch-sweep-btn');
@@ -1190,6 +1387,8 @@
 
     fabBtn.onclick = () => drawer.classList.toggle('open');
     closeBtn.onclick = () => drawer.classList.remove('open');
+
+    if (solveCurrentBtn) solveCurrentBtn.onclick = () => solveCurrentQuestionOnly();
 
     modeHighlight.onclick = () => {
       currentMode = 'highlight';
@@ -1210,7 +1409,7 @@
         applyAllHighlightsOnPage();
       } else if (currentQuestion) {
         const ans = getCachedAnswer(currentQuestion);
-        if (ans) applySingleHighlight(currentQuestion, ans.selected_option_index);
+        if (ans) applySingleHighlight(currentQuestion, ans);
       }
     };
 
@@ -1292,4 +1491,30 @@
       container.appendChild(card);
     });
   }
+
+  // --- MESSAGE DISPATCHER (FROM POPUP & SERVICE WORKER) ---
+  chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+    if (msg.action === 'TRIGGER_SCRAPE' || msg.action === 'SOLVE_CURRENT') {
+      const mode = detectQuizMode();
+      if (mode === 'ALL_IN_ONE') {
+        runBatchSweepAndSolve();
+      } else {
+        solveCurrentQuestionOnly();
+      }
+      sendResponse({ success: true });
+    } else if (msg.action === 'TRIGGER_BATCH') {
+      runBatchSweepAndSolve();
+      sendResponse({ success: true });
+    } else if (msg.action === 'OPEN_PANEL') {
+      if (shadowRoot) {
+        const drawer = shadowRoot.getElementById('drawer');
+        if (drawer) drawer.classList.add('open');
+      }
+      sendResponse({ success: true });
+    } else if (msg.action === 'APPLY_ANSWERS_IN_FRAME') {
+      refreshQuestionsOnPage();
+      sendResponse({ success: true });
+    }
+    return true;
+  });
 })();

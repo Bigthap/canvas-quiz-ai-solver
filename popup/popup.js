@@ -7,6 +7,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const modeVal = document.getElementById('mode-val');
   const effortVal = document.getElementById('effort-val');
   const triggerSolveBtn = document.getElementById('trigger-solve-btn');
+  const triggerBatchBtn = document.getElementById('trigger-batch-btn');
   const openPanelBtn = document.getElementById('open-panel-btn');
   const openOptionsBtn = document.getElementById('open-options-btn');
   const reloadBtn = document.getElementById('reload-tab-btn');
@@ -37,27 +38,44 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   );
 
-  // Trigger Solve directly from popup
-  triggerSolveBtn.onclick = () => {
-    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-      if (tabs[0]) {
-        chrome.tabs.sendMessage(tabs[0].id, { action: 'TRIGGER_SCRAPE' }, () => {
-          window.close();
-        });
-      }
-    });
-  };
+  // Trigger Solve current question directly from popup
+  if (triggerSolveBtn) {
+    triggerSolveBtn.onclick = () => {
+      chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+        if (tabs[0]) {
+          chrome.tabs.sendMessage(tabs[0].id, { action: 'SOLVE_CURRENT' }, () => {
+            window.close();
+          });
+        }
+      });
+    };
+  }
+
+  // Trigger Batch Sweep
+  if (triggerBatchBtn) {
+    triggerBatchBtn.onclick = () => {
+      chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+        if (tabs[0]) {
+          chrome.tabs.sendMessage(tabs[0].id, { action: 'TRIGGER_BATCH' }, () => {
+            window.close();
+          });
+        }
+      });
+    };
+  }
 
   // Open Panel
-  openPanelBtn.onclick = () => {
-    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-      if (tabs[0]) {
-        chrome.tabs.sendMessage(tabs[0].id, { action: 'OPEN_PANEL' }, () => {
-          window.close();
-        });
-      }
-    });
-  };
+  if (openPanelBtn) {
+    openPanelBtn.onclick = () => {
+      chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+        if (tabs[0]) {
+          chrome.tabs.sendMessage(tabs[0].id, { action: 'OPEN_PANEL' }, () => {
+            window.close();
+          });
+        }
+      });
+    };
+  }
 
   openOptionsBtn.onclick = () => {
     if (chrome.runtime.openOptionsPage) {

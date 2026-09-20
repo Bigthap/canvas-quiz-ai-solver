@@ -188,12 +188,19 @@ async function solveSmartHybrid(payload, apiKey) {
     const choiceInt = ansObj ? parseInt(ansObj.choice, 10) : NaN;
     const conf = (ansObj && typeof ansObj.confidence === 'number') ? ansObj.confidence : 0;
 
-    if (jevFailed || isNaN(choiceInt) || conf < CONF_THRESHOLD) {
+    // Check if question contains Thai characters
+    const hasThai = /[\u0E00-\u0E7F]/.test(q.text);
+    // Jev Decisions API is optimized for English choice tasks; on Thai questions, require >= 0.92 confidence or route to Grok 4.6
+    const threshold = hasThai ? 0.92 : CONF_THRESHOLD;
+
+    if (jevFailed || isNaN(choiceInt) || conf < threshold) {
       questionsForFallback.push(q);
     } else {
       const matchedOpt = (q.options || []).find((o) => o.index === choiceInt) || (q.options || [])[choiceInt] || { text: '' };
       finalAnswersMap[q.index] = {
         question_index: q.index,
+        question_stem: q.text,
+        question_number: q.index,
         selected_option_index: choiceInt,
         selected_option_text: matchedOpt.text || '',
         confidence: `${Math.round(conf * 100)}%`,
@@ -214,9 +221,12 @@ async function solveSmartHybrid(payload, apiKey) {
       );
       (fallbackResult.answers || []).forEach((ans) => {
         const qIdx = parseInt(ans.question_index, 10);
+        const origQ = payload.questions.find((item) => item.index === qIdx);
         if (!isNaN(qIdx)) {
           finalAnswersMap[qIdx] = {
             ...ans,
+            question_stem: origQ ? origQ.text : '',
+            question_number: qIdx,
             confidence: ans.confidence || '98% (Grok 4.6 Verification)',
             explanation: (ans.explanation ? ans.explanation + ' ' : '') + '[ยืนยันผลโดย Grok 4.6]'
           };
@@ -234,6 +244,8 @@ async function solveSmartHybrid(payload, apiKey) {
           const matchedOpt = (q.options || []).find((o) => o.index === validChoice) || (q.options || [])[0] || { text: '' };
           finalAnswersMap[q.index] = {
             question_index: q.index,
+            question_stem: q.text,
+            question_number: q.index,
             selected_option_index: validChoice,
             selected_option_text: matchedOpt.text || '',
             confidence: '60%',
@@ -312,6 +324,8 @@ async function solvePureJev(payload, apiKey) {
 
     return {
       question_index: q.index,
+      question_stem: q.text,
+      question_number: q.index,
       selected_option_index: validChoice,
       selected_option_text: matchedOpt.text || '',
       confidence: `${Math.round(conf * 100)}%`,
@@ -439,8 +453,17 @@ Return strictly a valid JSON object matching this schema:
 
   try {
     const parsed = JSON.parse(cleanJson);
+    const answers = (parsed.answers || []).map((a) => {
+      const qIdx = parseInt(a.question_index, 10);
+      const origQ = payload.questions.find((item) => item.index === qIdx);
+      return {
+        ...a,
+        question_stem: origQ ? origQ.text : '',
+        question_number: qIdx
+      };
+    });
     return {
-      answers: parsed.answers || [],
+      answers: answers,
       modelUsed: result.model || model,
       usage: result.usage
     };
@@ -456,6 +479,8 @@ Return strictly a valid JSON object matching this schema:
       const matchedOpt = q && q.options ? ((q.options || []).find((o) => o.index === optIdx) || q.options[optIdx]) : null;
       answersList.push({
         question_index: qIdx,
+        question_stem: q ? q.text : '',
+        question_number: qIdx,
         selected_option_index: optIdx,
         selected_option_text: matchedOpt ? matchedOpt.text : '',
         confidence: '95%',
