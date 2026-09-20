@@ -257,47 +257,49 @@
 
   // --- ROBUST QUESTION NUMBER EXTRACTION (LEARNOSITY / CANVAS NEW QUIZZES COMPLIANT) ---
   function extractQuestionNumber(container, defaultNum = 1) {
-    // 1. Learnosity / Canvas New Quizzes explicit selectors
-    const lrnSelectors = [
-      '.lrn_question_number',
-      '.item-count',
-      '.item-index',
-      '[data-item-order]',
-      '[data-question-order]',
-      '[data-question-number]',
-      '.question-number',
-      '.badge-number'
-    ];
-    for (const sel of lrnSelectors) {
-      const el = (container && container.querySelector(sel)) || document.querySelector(sel);
-      if (el) {
-        const txt = (el.innerText || el.getAttribute('data-item-order') || el.getAttribute('data-question-order') || '').trim();
-        const n = parseInt(txt, 10);
-        if (!isNaN(n) && n >= 1 && n <= 200) return n;
+    const rootEl = container || document;
+
+    // Strategy 1: Check if container stem matches a question already in answerCache with a known question number
+    if (container) {
+      const promptEl = container.querySelector('[class*="stimulus"], [class*="prompt"], [class*="text"], legend, h2, h3, h4');
+      const rawText = promptEl ? promptEl.innerText : container.innerText;
+      const stem = cleanStem(rawText);
+      if (stem && stem.length > 5) {
+        const cachedAns = getCachedAnswer({ text: stem });
+        if (cachedAns && (cachedAns.question_number || cachedAns.question_index)) {
+          const n = parseInt(cachedAns.question_number || cachedAns.question_index, 10);
+          if (n >= 1 && n <= 200) return n;
+        }
       }
     }
 
-    // 2. Search for the badge element preceding "Multiple choice ... points" or "คะแนน"
-    const pointsTargets = (container || document).querySelectorAll('span, div, p');
-    for (const el of pointsTargets) {
+    // Strategy 2: Find the badge preceding "Multiple choice ... points" or "คะแนน"
+    const pointsTargets = Array.from(rootEl.querySelectorAll('span, div, p, [class*="points"], [class*="badge"]')).filter((el) => {
+      if (el.closest('#__canvas_ai_host__')) return false;
       const txt = (el.innerText || '').trim();
-      if (/^(Multiple choice|หลายตัวเลือก)/i.test(txt) || /points?|คะแนน/i.test(txt)) {
-        // Look at previous siblings
-        let prev = el.previousElementSibling;
-        while (prev) {
-          const prevTxt = (prev.innerText || '').trim();
-          if (/^\d+$/.test(prevTxt)) {
-            const n = parseInt(prevTxt, 10);
-            if (n >= 1 && n <= 200) return n;
-          }
-          prev = prev.previousElementSibling;
+      return /^(Multiple choice|หลายตัวเลือก)/i.test(txt) || /(?:points?|คะแนน)/i.test(txt);
+    });
+
+    for (const el of pointsTargets) {
+      // Look at previous siblings
+      let prev = el.previousElementSibling;
+      while (prev) {
+        const prevTxt = (prev.innerText || '').trim();
+        const m = prevTxt.match(/(?:question|ข้อที่|ข้อ|^)\s*(\d+)/i);
+        if (m) {
+          const n = parseInt(m[1], 10);
+          if (n >= 1 && n <= 200) return n;
         }
-        // Look at parent children
-        if (el.parentElement) {
-          for (const child of el.parentElement.children) {
+        prev = prev.previousElementSibling;
+      }
+      // Look at parent's direct children
+      if (el.parentElement) {
+        for (const child of el.parentElement.children) {
+          if (child !== el) {
             const cTxt = (child.innerText || '').trim();
-            if (/^\d+$/.test(cTxt)) {
-              const n = parseInt(cTxt, 10);
+            const m = cTxt.match(/(?:question|ข้อที่|ข้อ|^)\s*(\d+)/i);
+            if (m) {
+              const n = parseInt(m[1], 10);
               if (n >= 1 && n <= 200) return n;
             }
           }
@@ -305,37 +307,45 @@
       }
     }
 
-    // 3. Search container for badge-like numbers
+    // Strategy 3: Check explicit Learnosity / Canvas selectors within container
     if (container) {
-      const badgeCandidates = container.querySelectorAll('[class*="question-number"], [class*="badge"], [class*="number"], [aria-label*="Question"], [aria-label*="ข้อ"], span, div');
-      for (const badge of badgeCandidates) {
-        const txt = (badge.innerText || '').trim();
-        if (badge.children.length === 0 && /^\d+$/.test(txt)) {
-          const val = parseInt(txt, 10);
-          if (val >= 1 && val <= 200) return val;
-        }
-        const m = txt.match(/^(?:question|ข้อที่|ข้อ)?\s*(\d+)[:\.]?$/i);
-        if (m) {
-          const val = parseInt(m[1], 10);
-          if (val >= 1 && val <= 200) return val;
+      const lrnSelectors = [
+        '.lrn_question_number',
+        '.item-count',
+        '.item-index',
+        '[data-item-order]',
+        '[data-question-order]',
+        '[data-question-number]',
+        '.question-number',
+        '.badge-number',
+        '[class*="badge"]',
+        '[class*="item-number"]'
+      ];
+      for (const sel of lrnSelectors) {
+        const el = container.querySelector(sel);
+        if (el) {
+          const txt = (el.getAttribute('data-item-order') || el.getAttribute('data-question-order') || el.innerText || '').trim();
+          const m = txt.match(/(?:question|ข้อที่|ข้อ|^)\s*(\d+)/i);
+          if (m) {
+            const n = parseInt(m[1], 10);
+            if (n >= 1 && n <= 200) return n;
+          }
         }
       }
     }
 
-    // 4. In ONE_AT_A_TIME mode, search globally for standalone badges
-    const mode = detectQuizMode();
-    if (mode === 'ONE_AT_A_TIME') {
-      const allCandidates = Array.from(document.querySelectorAll('button, span, div'));
-      for (const el of allCandidates) {
-        if (el.children.length === 0) {
-          const txt = (el.innerText || '').trim();
-          if (/^\d+$/.test(txt) && txt.length <= 3) {
-            const val = parseInt(txt, 10);
-            const rect = el.getBoundingClientRect();
-            if (rect.top > 0 && rect.top < window.innerHeight * 0.5 && val >= 1 && val <= 200) {
-              return val;
-            }
-          }
+    // Strategy 4: Check active item in sidebar navigation
+    const activeSidebarItem = document.querySelector(
+      '.lrn-questions-nav .active, .lrn_question_list .active, nav .active, aside .active, [aria-current="true"], [aria-current="step"], [aria-current="page"], [class*="selected"], [class*="current"]'
+    );
+    if (activeSidebarItem && !activeSidebarItem.closest('#__canvas_ai_host__')) {
+      const inNav = activeSidebarItem.closest('nav, aside, [class*="nav"], [class*="sidebar"], [class*="rail"], [role="navigation"], ol, ul');
+      if (inNav) {
+        const txt = (activeSidebarItem.innerText || activeSidebarItem.getAttribute('aria-label') || '').trim();
+        const m = txt.match(/(?:question|ข้อที่|ข้อ|^)\s*(\d+)/i);
+        if (m) {
+          const n = parseInt(m[1], 10);
+          if (n >= 1 && n <= 200) return n;
         }
       }
     }
@@ -354,17 +364,33 @@
     const containerMap = new Map();
 
     radioInputs.forEach((r) => {
-      const container =
-        r.closest('.lrn-item-wrapper') ||
-        r.closest('.lrn_item') ||
-        r.closest('.lrn_question') ||
-        r.closest('[data-automation="question-item"]') ||
-        r.closest('.display_question') ||
-        r.closest('.question_holder') ||
-        r.closest('fieldset') ||
-        r.closest('[role="radiogroup"]') ||
-        r.closest('form') ||
-        r.parentElement.parentElement;
+      let container = null;
+      let curr = r.parentElement;
+      while (curr && curr !== document.body && curr !== document.documentElement) {
+        const hasHeader = curr.querySelector && (
+          curr.querySelector('.lrn_question_number, .item-count, [data-item-order]') ||
+          Array.from(curr.querySelectorAll('span, div, p')).some((s) => /points?|คะแนน|multiple choice|หลายตัวเลือก/i.test(s.innerText || ''))
+        );
+        if (hasHeader) {
+          container = curr;
+          break;
+        }
+        curr = curr.parentElement;
+      }
+
+      if (!container) {
+        container =
+          r.closest('.lrn-item-wrapper') ||
+          r.closest('.lrn_item') ||
+          r.closest('.lrn_question') ||
+          r.closest('[data-automation="question-item"]') ||
+          r.closest('.display_question') ||
+          r.closest('.question_holder') ||
+          r.closest('fieldset') ||
+          r.closest('[role="radiogroup"]') ||
+          r.closest('form') ||
+          r.parentElement.parentElement;
+      }
 
       if (!containerMap.has(container)) {
         containerMap.set(container, []);
@@ -524,6 +550,9 @@
         if (ans) {
           applySingleHighlight(currentQuestion, ans);
           renderSingleResult(ans, currentQuestion, true);
+        } else {
+          clearHighlights();
+          renderPendingCard(currentQuestion);
         }
       }
     }
@@ -553,28 +582,52 @@
       clearTimeout(debounceTimer);
       debounceTimer = setTimeout(async () => {
         await refreshQuestionsOnPage();
-      }, 350);
+      }, 300);
     });
 
     observer.observe(document.body || document.documentElement, {
       childList: true,
-      subtree: true
+      subtree: true,
+      characterData: true
     });
 
-    // Periodic heartbeat to maintain highlights
-    setInterval(() => {
-      if (!isHarvesting && !isAutoClickingAll && allPageQuestions.length > 0) {
-        if (activeHighlights.length === 0 || !document.body.contains(activeHighlights[0])) {
-          const mode = detectQuizMode();
-          if (mode === 'ALL_IN_ONE') {
+    // Also detect navigation clicks directly
+    window.addEventListener('click', (e) => {
+      if (isHarvesting || isAutoClickingAll) return;
+      const target = e.target;
+      if (target && !target.closest('#__canvas_ai_host__')) {
+        setTimeout(async () => {
+          const list = await scrapeAllQuestionsOnPage();
+          if (list.length > 0 && (!currentQuestion || cleanStem(list[0].text) !== cleanStem(currentQuestion.text))) {
+            await refreshQuestionsOnPage();
+          }
+        }, 300);
+      }
+    }, true);
+
+    // Periodic heartbeat to maintain active state and highlights
+    setInterval(async () => {
+      if (isHarvesting || isAutoClickingAll) return;
+      const list = await scrapeAllQuestionsOnPage();
+      if (list.length > 0) {
+        const mode = detectQuizMode();
+        if (mode === 'ALL_IN_ONE') {
+          if (activeHighlights.length === 0 || !document.body.contains(activeHighlights[0])) {
             applyAllHighlightsOnPage();
-          } else if (currentQuestion) {
+          }
+        } else {
+          // Check if question on screen has changed
+          if (!currentQuestion || cleanStem(list[0].text) !== cleanStem(currentQuestion.text)) {
+            await refreshQuestionsOnPage();
+          } else {
             const ans = getCachedAnswer(currentQuestion);
-            if (ans) applySingleHighlight(currentQuestion, ans);
+            if (ans && (activeHighlights.length === 0 || !document.body.contains(activeHighlights[0]))) {
+              applySingleHighlight(currentQuestion, ans);
+            }
           }
         }
       }
-    }, 1500);
+    }, 800);
   }
 
   // --- SINGLE QUESTION SOLVER (INSTANT 1-QUESTION SOLVE) ---
@@ -687,32 +740,70 @@
       allPageQuestions = questionsToProcess;
     } else {
       // CASE 2: ONE AT A TIME (PAGINATED)
-      updateStatus('🔍 กำลังกวาดข้อสอบทีละข้อจากแถบตัวเลข...');
+      updateStatus('🔍 กำลังกวาดข้อสอบทีละข้อจากแถบตัวเลข/ปุ่มถัดไป...');
       const navMap = getAllQuestionNavButtons();
       const total = navMap.size > 0 ? navMap.size : 20;
       let prevStem = '';
 
-      for (let qNum = 1; qNum <= total; qNum++) {
+      // Read Question 1
+      updateStatus(`⚡ กำลังกวาดข้อสอบ: ข้อที่ 1/${total}...`);
+      let q1 = null;
+      for (let attempt = 0; attempt < 10; attempt++) {
+        const qList = await scrapeAllQuestionsOnPage();
+        if (qList.length > 0 && qList[0].text) {
+          q1 = qList[0];
+          break;
+        }
+        await new Promise((r) => setTimeout(r, 200));
+      }
+
+      if (q1 && q1.text) {
+        q1.number = 1;
+        prevStem = cleanStem(q1.text);
+        questionsToProcess.push(q1);
+      }
+
+      // Sequential crawling for Questions 2..total
+      for (let qNum = 2; qNum <= total; qNum++) {
         if (!isHarvesting) break;
         updateStatus(`⚡ กำลังกวาดข้อสอบ: ข้อที่ ${qNum}/${total}...`);
 
-        if (qNum > 1) {
-          const navBtn = findQuestionNavButton(qNum);
-          if (navBtn) {
-            navBtn.click();
-          } else {
-            const nextBtn = Array.from(document.querySelectorAll('button, a')).find(
-              (b) => b.innerText.toLowerCase().includes('next') || b.innerText.includes('ถัดไป')
-            );
-            if (nextBtn) nextBtn.click();
+        let qCandidate = null;
+        const navBtn = findQuestionNavButton(qNum);
+        if (navBtn) {
+          await performClick(navBtn);
+          for (let t = 0; t < 6; t++) {
+            await new Promise((r) => setTimeout(r, 120));
+            const list = await scrapeAllQuestionsOnPage();
+            if (list.length > 0 && list[0].text && cleanStem(list[0].text) !== prevStem) {
+              qCandidate = list[0];
+              break;
+            }
           }
         }
 
-        const q = await waitForActiveQuestion(qNum, prevStem);
-        if (q && q.text) {
-          prevStem = q.text;
-          q.number = qNum;
-          questionsToProcess.push(q);
+        // Fallback to Next button if sidebar click was missing or didn't advance
+        if (!qCandidate) {
+          const nextBtn = findNextButton();
+          if (nextBtn) {
+            await performClick(nextBtn);
+            for (let t = 0; t < 20; t++) {
+              await new Promise((r) => setTimeout(r, 150));
+              const list = await scrapeAllQuestionsOnPage();
+              if (list.length > 0 && list[0].text && cleanStem(list[0].text) !== prevStem) {
+                qCandidate = list[0];
+                break;
+              }
+            }
+          }
+        }
+
+        if (qCandidate && qCandidate.text && cleanStem(qCandidate.text) !== prevStem) {
+          prevStem = cleanStem(qCandidate.text);
+          qCandidate.number = qNum;
+          questionsToProcess.push(qCandidate);
+        } else {
+          console.warn(`[Canvas AI] Question ${qNum} could not be advanced or stem unchanged.`);
         }
       }
       allPageQuestions = questionsToProcess;
@@ -744,7 +835,17 @@
       if (mode === 'ALL_IN_ONE') {
         applyAllHighlightsOnPage();
       } else {
-        findQuestionNavButton(1)?.click();
+        const btn1 = findQuestionNavButton(1);
+        if (btn1) {
+          await performClick(btn1);
+        } else {
+          for (let p = 0; p < total; p++) {
+            const prevBtn = findPrevButton();
+            if (!prevBtn || prevBtn.disabled) break;
+            await performClick(prevBtn);
+            await new Promise((r) => setTimeout(r, 200));
+          }
+        }
       }
       return;
     }
@@ -808,16 +909,23 @@
         // Return to question 1 in paginated mode
         const btn1 = findQuestionNavButton(1);
         if (btn1) {
-          btn1.click();
-          await new Promise((r) => setTimeout(r, 600));
-          const firstQ = (await scrapeAllQuestionsOnPage())[0];
-          if (firstQ) {
-            currentQuestion = firstQ;
-            const ans = getCachedAnswer(firstQ);
-            if (ans) {
-              applySingleHighlight(firstQ, ans);
-              renderSingleResult(ans, firstQ, true);
-            }
+          await performClick(btn1);
+        } else {
+          for (let p = 0; p < total; p++) {
+            const prevBtn = findPrevButton();
+            if (!prevBtn || prevBtn.disabled) break;
+            await performClick(prevBtn);
+            await new Promise((r) => setTimeout(r, 200));
+          }
+        }
+        await new Promise((r) => setTimeout(r, 600));
+        const firstQ = (await scrapeAllQuestionsOnPage())[0];
+        if (firstQ) {
+          currentQuestion = firstQ;
+          const ans = getCachedAnswer(firstQ);
+          if (ans) {
+            applySingleHighlight(firstQ, ans);
+            renderSingleResult(ans, firstQ, true);
           }
         }
       }
@@ -888,23 +996,47 @@
       const navMap = getAllQuestionNavButtons();
       const total = navMap.size > 0 ? navMap.size : 20;
       let clickedCount = 0;
+      let prevStem = '';
 
       for (let qNum = 1; qNum <= total; qNum++) {
         if (!isAutoClickingAll) break;
         updateStatus(`⚡ กำลังคลิกตอบ: ข้อที่ ${qNum}/${total}...`);
 
-        const navBtn = findQuestionNavButton(qNum);
-        if (navBtn) {
-          navBtn.click();
-        } else {
-          const nextBtn = Array.from(document.querySelectorAll('button, a')).find(
-            (b) => b.innerText.toLowerCase().includes('next') || b.innerText.includes('ถัดไป')
-          );
-          if (nextBtn) nextBtn.click();
+        if (qNum > 1) {
+          let qCandidate = null;
+          const navBtn = findQuestionNavButton(qNum);
+          if (navBtn) {
+            await performClick(navBtn);
+            for (let t = 0; t < 6; t++) {
+              await new Promise((r) => setTimeout(r, 120));
+              const list = await scrapeAllQuestionsOnPage();
+              if (list.length > 0 && list[0].text && cleanStem(list[0].text) !== prevStem) {
+                qCandidate = list[0];
+                break;
+              }
+            }
+          }
+
+          if (!qCandidate) {
+            const nextBtn = findNextButton();
+            if (nextBtn) {
+              await performClick(nextBtn);
+              for (let t = 0; t < 20; t++) {
+                await new Promise((r) => setTimeout(r, 150));
+                const list = await scrapeAllQuestionsOnPage();
+                if (list.length > 0 && list[0].text && cleanStem(list[0].text) !== prevStem) {
+                  qCandidate = list[0];
+                  break;
+                }
+              }
+            }
+          }
         }
 
-        const q = await waitForActiveQuestion(qNum);
+        const qList = await scrapeAllQuestionsOnPage();
+        const q = qList[0];
         if (q && q.text) {
+          prevStem = cleanStem(q.text);
           const ans = getCachedAnswer(q);
           if (ans) {
             const targetOpt = findMatchingOption(q, ans);
@@ -915,23 +1047,96 @@
           }
         }
 
-        const delay = Math.floor(Math.random() * 200) + 350;
+        const delay = Math.floor(Math.random() * 200) + 300;
         await new Promise((r) => setTimeout(r, delay));
       }
 
       isAutoClickingAll = false;
       if (btn) btn.innerText = '⚡ คลิกเลือกคำตอบทุกข้อจาก Cache';
       updateStatus(`🎉 คลิกเลือกคำตอบครบ ${clickedCount}/${total} ข้อเรียบร้อยแล้ว!`);
-      findQuestionNavButton(1)?.click();
+
+      const btn1 = findQuestionNavButton(1);
+      if (btn1) {
+        await performClick(btn1);
+      } else {
+        for (let p = 0; p < total; p++) {
+          const prevBtn = findPrevButton();
+          if (!prevBtn || prevBtn.disabled) break;
+          await performClick(prevBtn);
+          await new Promise((r) => setTimeout(r, 200));
+        }
+      }
     }
   }
 
   // --- NAVIGATION HELPERS (FOR PAGINATED MODE) ---
-  function getAllQuestionNavButtons() {
-    const all = Array.from(document.querySelectorAll('button, [role="button"], a, li'));
-    const map = new Map();
+  function findNextButton() {
+    const candidates = Array.from(document.querySelectorAll('button, [role="button"], a, input[type="button"]')).filter(
+      (el) => !el.closest('#__canvas_ai_host__') && el.offsetParent !== null
+    );
 
-    all.forEach((el) => {
+    for (const el of candidates) {
+      const aria = (el.getAttribute('aria-label') || '').toLowerCase();
+      const cls = (el.className || '').toString().toLowerCase();
+      const id = (el.id || '').toLowerCase();
+      const text = (el.innerText || el.value || '').trim().toLowerCase();
+
+      if (aria.includes('prev') || text.includes('prev') || text.includes('ก่อนหน้า')) continue;
+
+      if (cls.includes('next') || id.includes('next') || aria.includes('next') || aria.includes('ถัดไป')) {
+        return el;
+      }
+      if (/^(next|ถัดไป|ข้อถัดไป)\b/i.test(text) || text === 'next' || text === 'ถัดไป') {
+        return el;
+      }
+    }
+    return null;
+  }
+
+  function findPrevButton() {
+    const candidates = Array.from(document.querySelectorAll('button, [role="button"], a, input[type="button"]')).filter(
+      (el) => !el.closest('#__canvas_ai_host__') && el.offsetParent !== null
+    );
+
+    for (const el of candidates) {
+      const aria = (el.getAttribute('aria-label') || '').toLowerCase();
+      const cls = (el.className || '').toString().toLowerCase();
+      const id = (el.id || '').toLowerCase();
+      const text = (el.innerText || el.value || '').trim().toLowerCase();
+
+      if (cls.includes('prev') || id.includes('prev') || aria.includes('prev') || aria.includes('ก่อนหน้า')) {
+        return el;
+      }
+      if (/^(previous|prev|ก่อนหน้า|ข้อก่อนหน้า)\b/i.test(text) || text === 'previous' || text === 'ก่อนหน้า') {
+        return el;
+      }
+    }
+    return null;
+  }
+
+  function getAllQuestionNavButtons() {
+    const navContainers = Array.from(
+      document.querySelectorAll(
+        '.lrn-questions-nav, .lrn_question_list, .lrn-item-list, [data-automation="question-nav"], nav, aside, [role="navigation"]'
+      )
+    ).filter((el) => !el.closest('#__canvas_ai_host__'));
+
+    const map = new Map();
+    const candidateElements = [];
+
+    if (navContainers.length > 0) {
+      navContainers.forEach((container) => {
+        candidateElements.push(...Array.from(container.querySelectorAll('button, [role="button"], a, li')));
+      });
+    } else {
+      candidateElements.push(...Array.from(document.querySelectorAll('[aria-label*="Question" i], [aria-label*="ข้อ" i]')));
+    }
+
+    candidateElements.forEach((el) => {
+      if (el.closest('#__canvas_ai_host__')) return;
+      const cls = (el.className || '').toString().toLowerCase();
+      if (cls.includes('badge') || cls.includes('notification') || cls.includes('counter')) return;
+
       const txt = (el.innerText || '').trim();
       const aria = (el.getAttribute('aria-label') || '').trim();
 
@@ -940,19 +1145,13 @@
       }
 
       let qNum = null;
-      const ariaMatch = aria.match(/question\s*(\d+)/i) || aria.match(/ข้อที่\s*(\d+)/i);
+      const ariaMatch = aria.match(/(?:question|ข้อที่|ข้อ)\s*(\d+)/i);
       if (ariaMatch) {
-        qNum = parseInt(ariaMatch[1]);
-      } else {
-        const numMatch = txt.match(/(?:^|[^\d])(\d+)(?:[^\d]|$)/);
-        if (numMatch) {
-          const n = parseInt(numMatch[1]);
-          if (n >= 1 && n <= 100) {
-            const inSidebar = el.closest('nav, aside, [class*="nav"], [class*="sidebar"], [class*="rail"], [role="navigation"], ol, ul');
-            if (inSidebar || txt.length <= 6) {
-              qNum = n;
-            }
-          }
+        qNum = parseInt(ariaMatch[1], 10);
+      } else if (/^\d{1,3}$/.test(txt)) {
+        const n = parseInt(txt, 10);
+        if (n >= 1 && n <= 200) {
+          qNum = n;
         }
       }
 
@@ -968,12 +1167,12 @@
     const navMap = getAllQuestionNavButtons();
     if (navMap.has(targetNum)) return navMap.get(targetNum);
 
-    const all = Array.from(document.querySelectorAll('button, [role="button"], a, li'));
-    return all.find((el) => {
-      const txt = el.innerText.trim();
-      const m = txt.match(/(?:^|[^\d])(\d+)(?:[^\d]|$)/);
-      return m && parseInt(m[1]) === targetNum && txt.length <= 6;
-    });
+    const ariaMatch = document.querySelector(
+      `[aria-label="Question ${targetNum}" i], [aria-label="ข้อ ${targetNum}" i], [aria-label="ข้อที่ ${targetNum}" i], [data-item-order="${targetNum}"], [data-question-order="${targetNum}"]`
+    );
+    if (ariaMatch && !ariaMatch.closest('#__canvas_ai_host__')) return ariaMatch;
+
+    return null;
   }
 
   async function waitForActiveQuestion(expectedNum, prevStem = '', maxWaitMs = 2500) {
@@ -984,9 +1183,7 @@
         const matching = qList.find((q) => q.number === expectedNum);
         if (matching) return matching;
 
-        // If prevStem was provided, make sure the DOM question has changed
         if (prevStem && cleanStem(qList[0].text) === cleanStem(prevStem)) {
-          // Still on old question, keep waiting for DOM update
           await new Promise((r) => setTimeout(r, 120));
           continue;
         }
@@ -1445,10 +1642,11 @@
     const matchedOpt = findMatchingOption(q, ans);
     const optLabel = matchedOpt ? matchedOpt.text : (ans.selected_option_text || `ตัวเลือก [${ans.selected_option_index}]`);
     const container = shadowRoot.getElementById('results-box');
+    const displayNum = (q.number && q.number !== 1) ? q.number : (ans.question_number || ans.question_index || q.number || 1);
     container.innerHTML = `
       <div class="q-card">
         <div class="q-card-header">
-          <span style="color:#10b981;">ข้อที่ ${q.number || ans.question_index || 1}</span>
+          <span style="color:#10b981;">ข้อที่ ${displayNum}</span>
           <div style="display:flex; gap:6px; align-items:center;">
             ${isCacheHit ? '<span class="cache-badge">⚡ Cache Hit</span>' : '<span class="fresh-badge">✨ วิเคราะห์สด</span>'}
             <span style="color:#6ee7b7; font-size:11px;">${ans.confidence || '99%'}</span>
@@ -1461,6 +1659,29 @@
         </div>
       </div>
     `;
+  }
+
+  function renderPendingCard(q) {
+    if (!shadowRoot || !q) return;
+    const container = shadowRoot.getElementById('results-box');
+    if (!container) return;
+    container.innerHTML = `
+      <div class="q-card" style="border-color: #f59e0b;">
+        <div class="q-card-header">
+          <span style="color:#f59e0b;">ข้อที่ ${q.number || 1}</span>
+          <span style="background:rgba(245, 158, 11, 0.2); border:1px solid #f59e0b; color:#fbbf24; padding:2px 8px; border-radius:6px; font-size:11px;">⏳ ยังไม่มีคำตอบใน Cache</span>
+        </div>
+        <div class="q-stem">${q.text}</div>
+        <button id="card-solve-now-btn" style="margin-top:8px; padding:12px; background:linear-gradient(135deg, #10b981 0%, #059669 100%); color:white; border:none; border-radius:8px; font-weight:700; font-size:13px; cursor:pointer; box-shadow:0 4px 12px rgba(16, 185, 129, 0.3);">
+          ⚡ วิเคราะห์ข้อนี้สดทันที
+        </button>
+      </div>
+    `;
+
+    const solveBtn = container.querySelector('#card-solve-now-btn');
+    if (solveBtn) {
+      solveBtn.onclick = () => solveCurrentQuestionOnly();
+    }
   }
 
   function renderSummaryResults(questions) {
