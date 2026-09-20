@@ -24,9 +24,16 @@ document.addEventListener('DOMContentLoaded', () => {
         statusText.innerText = 'ยังไม่ได้ตั้งค่า API Key';
       }
 
-      modelVal.innerText = res.model || 'openai/gpt-5.6-luna';
+      const rawModel = res.model || 'smart-hybrid';
+      const modelLabels = {
+        'smart-hybrid': '⚡ Smart Hybrid (Jev + Grok)',
+        'openai/gpt-5.6-luna': '🧠 Pure Luna High',
+        'typesafe/jev-1.13': '⚡ Pure Jev-1.13',
+        'x-ai/grok-4.6': '🚀 Pure Grok 4.6'
+      };
+      modelVal.innerText = modelLabels[rawModel] || rawModel;
       modeVal.innerText = res.defaultMode === 'autoclick' ? 'Auto-Click' : 'Glow Highlight';
-      effortVal.innerText = res.reasoningEffort || 'high';
+      effortVal.innerText = res.reasoningEffort || 'low';
     }
   );
 

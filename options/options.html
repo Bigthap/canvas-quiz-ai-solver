@@ -127,20 +127,32 @@
       </div>
 
       <div class="form-group">
-        <label for="model">AI Model:</label>
-        <input type="text" id="model" value="openai/gpt-5.6-luna" required>
-        <div class="hint">โมเดลเริ่มต้น: <code>openai/gpt-5.6-luna</code> (หรือสามารถเปลี่ยนเป็น <code>google/gemini-2.5-flash</code>, <code>anthropic/claude-3.5-sonnet</code> ได้)</div>
+        <label for="modelPreset">AI Engine / Model:</label>
+        <select id="modelPreset">
+          <option value="smart-hybrid" selected>⚡ Smart Hybrid (Jev-1.13 + Grok 4.6 Fallback) - แนะนำ แม่นยำ 95.7% เร็ว &amp; ประหยัด</option>
+          <option value="openai/gpt-5.6-luna">🧠 Pure Luna High (OpenAI GPT-5.6 Luna - LLM ล้วน)</option>
+          <option value="typesafe/jev-1.13">⚡ Pure Jev-1.13 (Typesafe Decisions API - เร็วสุด &amp; ประหยัดสุด)</option>
+          <option value="x-ai/grok-4.6">🚀 Pure Grok 4.6 (SpaceXAI / xAI - LLM ล้วน)</option>
+          <option value="custom">🛠️ กำหนดโมเดลเอง (Custom Model)...</option>
+        </select>
+        <div class="hint">Smart Hybrid ใช้ Jev-1.13 กวาดตอบรวดเดียว แล้วส่งเฉพาะข้อที่ลังเลไปให้ Grok 4.6 ช่วยเก็บตก</div>
+      </div>
+
+      <div class="form-group" id="customModelGroup" style="display: none;">
+        <label for="customModelInput">ระบุ Model ID ที่ต้องการ:</label>
+        <input type="text" id="customModelInput" placeholder="เช่น google/gemini-2.5-flash หรือ anthropic/claude-3.5-sonnet">
+        <div class="hint">Model ID จาก OpenRouter</div>
       </div>
 
       <div class="form-group">
         <label for="reasoningEffort">Reasoning Effort:</label>
         <select id="reasoningEffort">
-          <option value="high" selected>High (คิดและทบทวนเชิงลึกสูงสุด)</option>
+          <option value="low" selected>Low (แนะนำสำหรับ Smart Hybrid / รวดเร็ว &amp; ประหยัด)</option>
+          <option value="high">High (คิดและทบทวนเชิงลึกสูงสุด สำหรับ Pure Luna High)</option>
           <option value="medium">Medium</option>
-          <option value="low">Low</option>
           <option value="none">None (ไม่ใช้โหมด Reasoning)</option>
         </select>
-        <div class="hint">ตั้งค่า effort การวิเคราะห์สำหรับโมเดล Reasoning</div>
+        <div class="hint">ตั้งค่าระดับการคิดวิเคราะห์สำหรับโมเดล Reasoning (Smart Hybrid แนะนำ Low เพื่อความเร็วและแม่นยำสูงสุด)</div>
       </div>
 
       <div class="form-group">

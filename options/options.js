@@ -2,19 +2,43 @@
 
 document.addEventListener('DOMContentLoaded', () => {
   const apiKeyInput = document.getElementById('apiKey');
-  const modelInput = document.getElementById('model');
+  const modelPresetSelect = document.getElementById('modelPreset');
+  const customModelGroup = document.getElementById('customModelGroup');
+  const customModelInput = document.getElementById('customModelInput');
   const reasoningSelect = document.getElementById('reasoningEffort');
   const defaultModeSelect = document.getElementById('defaultMode');
   const form = document.getElementById('settings-form');
   const toast = document.getElementById('toast');
+
+  const KNOWN_PRESETS = ['smart-hybrid', 'openai/gpt-5.6-luna', 'typesafe/jev-1.13', 'x-ai/grok-4.6'];
+
+  function updateCustomVisibility() {
+    if (modelPresetSelect.value === 'custom') {
+      customModelGroup.style.display = 'block';
+      customModelInput.required = true;
+    } else {
+      customModelGroup.style.display = 'none';
+      customModelInput.required = false;
+    }
+  }
+
+  modelPresetSelect.addEventListener('change', updateCustomVisibility);
 
   // Load existing settings
   chrome.storage.local.get(
     ['openRouterApiKey', 'model', 'reasoningEffort', 'defaultMode'],
     (res) => {
       if (res.openRouterApiKey) apiKeyInput.value = res.openRouterApiKey;
-      if (res.model) modelInput.value = res.model;
-      if (res.reasoningEffort) reasoningSelect.value = res.reasoningEffort;
+      const currentModel = res.model || 'smart-hybrid';
+      if (KNOWN_PRESETS.includes(currentModel)) {
+        modelPresetSelect.value = currentModel;
+        customModelGroup.style.display = 'none';
+      } else {
+        modelPresetSelect.value = 'custom';
+        customModelInput.value = currentModel;
+        customModelGroup.style.display = 'block';
+      }
+      reasoningSelect.value = res.reasoningEffort || 'low';
       if (res.defaultMode) defaultModeSelect.value = res.defaultMode;
     }
   );
@@ -23,7 +47,10 @@ document.addEventListener('DOMContentLoaded', () => {
   form.addEventListener('submit', (e) => {
     e.preventDefault();
     const apiKey = apiKeyInput.value.trim();
-    const model = modelInput.value.trim() || 'openai/gpt-5.6-luna';
+    let model = modelPresetSelect.value;
+    if (model === 'custom') {
+      model = customModelInput.value.trim() || 'smart-hybrid';
+    }
     const reasoningEffort = reasoningSelect.value;
     const defaultMode = defaultModeSelect.value;
 

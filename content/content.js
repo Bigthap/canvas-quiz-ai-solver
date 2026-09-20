@@ -823,8 +823,8 @@
 
     chrome.runtime.sendMessage({ action: 'GET_CONFIG' }, (response) => {
       const config = response?.config || {
-        model: 'openai/gpt-5.6-luna',
-        reasoningEffort: 'high',
+        model: 'smart-hybrid',
+        reasoningEffort: 'low',
         defaultMode: 'highlight'
       };
       currentMode = config.defaultMode || 'highlight';
@@ -1155,7 +1155,7 @@
 
           <div class="info-pill">
             <span style="color:#9ca3af;">โมเดล AI:</span>
-            <span class="model-tag">${config.model} (${config.reasoningEffort})</span>
+            <span class="model-tag">${config.model === 'smart-hybrid' ? '⚡ Smart Hybrid (Jev + Grok)' : (config.model + ' (' + config.reasoningEffort + ')')}</span>
           </div>
 
           <div class="status-text" id="status-display">พร้อมทำงาน • กดปุ่มสีน้ำเงินเพื่อเริ่มวิเคราะห์</div>
