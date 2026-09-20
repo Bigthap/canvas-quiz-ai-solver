@@ -135,12 +135,17 @@
   function cleanStem(txt) {
     if (!txt) return '';
     return txt
+      .replace(/Question\s+\d+\s+is\s+(?:unpinned|pinned)\.?(\s*Click\s+to\s+(?:pin|unpin)\.?)?/gi, '')
       .replace(/Question at position \d+/gi, '')
+      .replace(/Click to (?:pin|unpin)\.?/gi, '')
+      .replace(/is (?:unpinned|pinned)/gi, '')
       .replace(/Multiple choice/gi, '')
+      .replace(/หลายตัวเลือก/gi, '')
       .replace(/\d+(\.\d+)?\s*points?/gi, '')
       .replace(/\d+\s*\/\s*\d+\s*points?/gi, '')
+      .replace(/\d+(\.\d+)?\s*คะแนน/gi, '')
       .replace(/คะแนน/gi, '')
-      .replace(/^\s*\d+\s*[\.\)]\s*/, '')
+      .replace(/^\s*(?:Question|ข้อที่|ข้อ)?\s*\d+\s*[\.\:\)]\s*/i, '')
       .replace(/\s+/g, ' ')
       .trim();
   }
@@ -260,11 +265,27 @@
   function extractQuestionNumber(container, defaultNum = 1) {
     const rootEl = container || document;
 
+    // Strategy 0: Exact Canvas New Quizzes Position Box (e.g. <div data-automation="sdk-position-box-text"><span aria-hidden="true">2</span></div>)
+    const posBox =
+      rootEl.querySelector('[data-automation="sdk-position-box-text"] span[aria-hidden="true"]') ||
+      rootEl.querySelector('[data-automation="sdk-position-box-text"]') ||
+      document.querySelector('[data-automation="sdk-position-box-text"] span[aria-hidden="true"]') ||
+      document.querySelector('[data-automation="sdk-position-box-text"]');
+    if (posBox) {
+      const txt = (posBox.innerText || '').trim();
+      const m = txt.match(/\b(\d{1,3})\b/);
+      if (m) {
+        const n = parseInt(m[1], 10);
+        if (n >= 1 && n <= 200) return n;
+      }
+    }
+
     // Strategy 1: Check if container stem matches a question already in answerCache with a known question number
     if (container) {
-      const promptEl = container.querySelector(
-        '.lrn_stimulus_content, .lrn_stimulus, [class*="stimulus"], .lrn_question_text, [class*="prompt"], .question_text, h2, h3, h4'
-      );
+      const promptEl =
+        container.querySelector('fieldset legend .user_content') ||
+        container.querySelector('.user_content') ||
+        container.querySelector('.lrn_stimulus_content, .lrn_stimulus, [class*="stimulus"], .lrn_question_text, [class*="prompt"], .question_text, h2, h3, h4');
       const rawText = promptEl ? promptEl.innerText : container.innerText;
       const stem = cleanStem(rawText);
       if (stem && stem.length > 5) {
@@ -339,7 +360,7 @@
 
     // Strategy 4: Check active item in sidebar navigation
     const activeSidebarItem = document.querySelector(
-      '.lrn-questions-nav .active, .lrn_question_list .active, nav .active, aside .active, [aria-current="true"], [aria-current="step"], [aria-current="page"], [class*="selected"], [class*="current"]'
+      '#quiz-react-sdk_sidebar-nav .active, #quiz-react-sdk_sidebar-nav [aria-current="true"], .lrn-questions-nav .active, .lrn_question_list .active, nav .active, aside .active, [aria-current="true"], [aria-current="step"], [aria-current="page"], [class*="selected"], [class*="current"]'
     );
     if (activeSidebarItem && !activeSidebarItem.closest('#__canvas_ai_host__')) {
       const inNav = activeSidebarItem.closest('nav, aside, [class*="nav"], [class*="sidebar"], [class*="rail"], [role="navigation"], ol, ul');
@@ -367,32 +388,37 @@
     const containerMap = new Map();
 
     radioInputs.forEach((r) => {
-      let container = null;
-      let curr = r.parentElement;
-      while (curr && curr !== document.body && curr !== document.documentElement) {
-        const hasHeader = curr.querySelector && (
-          curr.querySelector('.lrn_question_number, .item-count, [data-item-order]') ||
-          Array.from(curr.querySelectorAll('span, div, p')).some((s) => /points?|คะแนน|multiple choice|หลายตัวเลือก/i.test(s.innerText || ''))
-        );
-        if (hasHeader) {
-          container = curr;
-          break;
+      let container =
+        r.closest('div[data-automation="sdk-take-item-question"]') ||
+        r.closest('div[data-automation="sdk-item-wrapper"]') ||
+        r.closest('.lrn-item-wrapper') ||
+        r.closest('.lrn_item') ||
+        r.closest('.lrn_question') ||
+        r.closest('[data-automation="question-item"]') ||
+        r.closest('.display_question') ||
+        r.closest('.question_holder');
+
+      if (!container) {
+        let curr = r.parentElement;
+        while (curr && curr !== document.body && curr !== document.documentElement) {
+          const hasHeader = curr.querySelector && (
+            curr.querySelector('[data-automation="sdk-position-box-text"], .lrn_question_number, .item-count, [data-item-order]') ||
+            Array.from(curr.querySelectorAll('span, div, p')).some((s) => /points?|คะแนน|multiple choice|หลายตัวเลือก/i.test(s.innerText || ''))
+          );
+          if (hasHeader) {
+            container = curr;
+            break;
+          }
+          curr = curr.parentElement;
         }
-        curr = curr.parentElement;
       }
 
       if (!container) {
         container =
-          r.closest('.lrn-item-wrapper') ||
-          r.closest('.lrn_item') ||
-          r.closest('.lrn_question') ||
-          r.closest('[data-automation="question-item"]') ||
-          r.closest('.display_question') ||
-          r.closest('.question_holder') ||
+          r.closest('fieldset[role="radiogroup"]') ||
           r.closest('fieldset') ||
-          r.closest('[role="radiogroup"]') ||
           r.closest('form') ||
-          r.parentElement.parentElement;
+          r.parentElement?.parentElement;
       }
 
       if (!containerMap.has(container)) {
@@ -424,29 +450,69 @@
         return (pos & Node.DOCUMENT_POSITION_FOLLOWING) ? -1 : 1;
       });
 
+      // Helper to extract clean text from DOM element: strips screenReaderContent, aria-hidden, pin buttons
+      const extractCleanDomText = (el) => {
+        if (!el) return '';
+        const clone = el.cloneNode(true);
+        clone.querySelectorAll(
+          '[class*="screenReaderContent"], .screenreader-only, .sr-only, .lrn_sr_only, [class*="sr_only"], [data-automation*="pin"], [aria-hidden="true"], button'
+        ).forEach((n) => n.remove());
+        return cleanStem(clone.innerText);
+      };
+
       // Extract Question Stem
       let stemText = '';
 
-      // Priority 1: Dedicated Learnosity / Canvas Stimulus & Prompt selectors
-      const promptSelectors = [
-        '.lrn_stimulus_content',
-        '.lrn_stimulus',
-        '[class*="stimulus"]',
-        '.lrn_question_text',
-        '.lrn-prompt',
-        '[class*="prompt"]',
-        '.question_text',
-        '[data-automation="question-prompt"]',
-        '.display_question .question_text'
-      ];
+      // Priority 0: Canvas New Quizzes - RCE .user_content inside fieldset / legend
+      const legendUserContent =
+        container.querySelector('fieldset[role="radiogroup"] legend .user_content') ||
+        container.querySelector('fieldset legend .user_content') ||
+        container.querySelector('[class*="formFieldLayout__label"] .user_content') ||
+        container.querySelector('legend .user_content');
 
-      for (const sel of promptSelectors) {
-        const el = container.querySelector(sel);
-        if (el) {
-          const txt = cleanStem(el.innerText);
-          if (txt && txt.length >= 3 && !txt.toLowerCase().includes('question at position')) {
+      if (legendUserContent) {
+        const txt = extractCleanDomText(legendUserContent);
+        if (txt && txt.length >= 2) {
+          stemText = txt;
+        }
+      }
+
+      // Priority 0.5: Any .user_content in container that is NOT inside a radio option/label
+      if (!stemText) {
+        const userContents = Array.from(container.querySelectorAll('.user_content')).filter(
+          (uc) => !uc.closest('label, [class*="Radio"], [role="radio"]')
+        );
+        for (const uc of userContents) {
+          const txt = extractCleanDomText(uc);
+          if (txt && txt.length >= 3) {
             stemText = txt;
             break;
+          }
+        }
+      }
+
+      // Priority 1: Dedicated Learnosity / Canvas Stimulus & Prompt selectors
+      if (!stemText) {
+        const promptSelectors = [
+          '.lrn_stimulus_content',
+          '.lrn_stimulus',
+          '[class*="stimulus"]',
+          '.lrn_question_text',
+          '.lrn-prompt',
+          '[class*="prompt"]',
+          '.question_text',
+          '[data-automation="question-prompt"]',
+          '.display_question .question_text'
+        ];
+
+        for (const sel of promptSelectors) {
+          const el = container.querySelector(sel);
+          if (el) {
+            const txt = extractCleanDomText(el);
+            if (txt && txt.length >= 3 && !txt.toLowerCase().includes('question at position')) {
+              stemText = txt;
+              break;
+            }
           }
         }
       }
@@ -455,7 +521,7 @@
       if (!stemText) {
         const headings = container.querySelectorAll('h1, h2, h3, h4, h5');
         for (const h of headings) {
-          const txt = cleanStem(h.innerText);
+          const txt = extractCleanDomText(h);
           if (txt && txt.length >= 3 && !txt.toLowerCase().includes('question at position')) {
             stemText = txt;
             break;
@@ -463,12 +529,12 @@
         }
       }
 
-      // Priority 3: Paragraphs or divs before the options
+      // Priority 3: Paragraphs or divs before options (excluding buttons, pin, screenReaderContent, labels)
       if (!stemText) {
         const paragraphs = container.querySelectorAll('p, div');
         for (const p of paragraphs) {
-          if (p.closest('label, button, [role="radio"], [role="button"], #__canvas_ai_host__, fieldset')) continue;
-          const txt = cleanStem(p.innerText);
+          if (p.closest('label, button, [role="radio"], [role="button"], #__canvas_ai_host__, [data-automation*="pin"], [class*="screenReaderContent"]')) continue;
+          const txt = extractCleanDomText(p);
           if (txt && txt.length >= 6 && !txt.toLowerCase().includes('question at position')) {
             const isOption = radios.some((r) => {
               const l = r.closest('label') || r.parentElement;
@@ -482,10 +548,12 @@
         }
       }
 
-      // Priority 4: Clone container and remove labels, inputs, radios, buttons, legends, badges
+      // Priority 4: Clone container and remove labels, inputs, radios, buttons, badges, pin, sr-only
       if (!stemText) {
         const clone = container.cloneNode(true);
-        clone.querySelectorAll('label, input, button, [role="radio"], legend, [class*="points"], [class*="badge"], .lrn_sr_only, .sr-only').forEach((el) => el.remove());
+        clone.querySelectorAll(
+          'label, input, button, [role="radio"], [data-automation*="pin"], [class*="points"], [class*="badge"], [class*="screenReaderContent"], .lrn_sr_only, .sr-only, .screenreader-only, [aria-hidden="true"]'
+        ).forEach((el) => el.remove());
         stemText = cleanStem(clone.innerText);
       }
 
@@ -493,14 +561,11 @@
       if (!stemText || stemText.length < 5 || stemText.toLowerCase().includes('question at position')) {
         const parent = container.parentElement;
         if (parent) {
-          for (const sel of promptSelectors) {
-            const el = parent.querySelector(sel);
-            if (el) {
-              const txt = cleanStem(el.innerText);
-              if (txt && txt.length >= 3 && !txt.toLowerCase().includes('question at position')) {
-                stemText = txt;
-                break;
-              }
+          const parentUserContent = parent.querySelector('.user_content');
+          if (parentUserContent && !parentUserContent.closest('label, [class*="Radio"], [role="radio"]')) {
+            const txt = extractCleanDomText(parentUserContent);
+            if (txt && txt.length >= 3) {
+              stemText = txt;
             }
           }
         }
@@ -510,10 +575,27 @@
       const options = [];
       radios.forEach((r, idx) => {
         const label = r.closest('label') || document.querySelector(`label[for="${r.id}"]`) || r.parentElement;
-        const rawText = label ? label.innerText : '';
+        let optText = '';
+
+        // Check aria-label on radio input first (e.g. aria-label="Answer: ทำให้พอลิเมอร์...")
+        const ariaLabel = r.getAttribute('aria-label');
+        if (ariaLabel && ariaLabel.trim()) {
+          optText = ariaLabel.replace(/^Answer:\s*/i, '').trim();
+        }
+
+        // Check label .user_content or label text
+        if (!optText && label) {
+          const uc = label.querySelector('.user_content');
+          if (uc) {
+            optText = extractCleanDomText(uc);
+          } else {
+            optText = label.innerText;
+          }
+        }
+
         options.push({
           index: idx,
-          text: cleanText(rawText),
+          text: cleanText(optText),
           targetElement: label || r
         });
       });
@@ -809,16 +891,23 @@
       totalCount = navMap.size > 0 ? navMap.size : 20;
       let prevStem = '';
 
+      // Ensure we navigate to Question 1 first
+      const btn1 = findQuestionNavButton(1);
+      if (btn1) {
+        await performClick(btn1);
+        await new Promise((r) => setTimeout(r, 400));
+      }
+
       // Read Question 1
       updateStatus(`⚡ กำลังกวาดข้อสอบ: ข้อที่ 1/${totalCount}...`);
       let q1 = null;
-      for (let attempt = 0; attempt < 10; attempt++) {
+      for (let attempt = 0; attempt < 15; attempt++) {
         const qList = await scrapeAllQuestionsOnPage();
         if (qList.length > 0 && qList[0].text) {
           q1 = qList[0];
           break;
         }
-        await new Promise((r) => setTimeout(r, 200));
+        await new Promise((r) => setTimeout(r, 150));
       }
 
       if (q1 && q1.text) {
@@ -836,8 +925,8 @@
         const navBtn = findQuestionNavButton(qNum);
         if (navBtn) {
           await performClick(navBtn);
-          for (let t = 0; t < 6; t++) {
-            await new Promise((r) => setTimeout(r, 120));
+          for (let t = 0; t < 15; t++) {
+            await new Promise((r) => setTimeout(r, 150));
             const list = await scrapeAllQuestionsOnPage();
             if (list.length > 0 && list[0].text && cleanStem(list[0].text) !== prevStem) {
               qCandidate = list[0];
@@ -867,7 +956,16 @@
           qCandidate.number = qNum;
           questionsToProcess.push(qCandidate);
         } else {
-          console.warn(`[Canvas AI] Question ${qNum} could not be advanced or stem unchanged.`);
+          // Retry scraping once more after brief delay
+          await new Promise((r) => setTimeout(r, 300));
+          const list = await scrapeAllQuestionsOnPage();
+          if (list.length > 0 && list[0].text && cleanStem(list[0].text) !== prevStem) {
+            prevStem = cleanStem(list[0].text);
+            list[0].number = qNum;
+            questionsToProcess.push(list[0]);
+          } else {
+            console.warn(`[Canvas AI] Question ${qNum} could not be advanced or stem unchanged.`);
+          }
         }
       }
       allPageQuestions = questionsToProcess;
@@ -1135,6 +1233,14 @@
 
   // --- NAVIGATION HELPERS (FOR PAGINATED MODE) ---
   function findNextButton() {
+    // Priority 0: Exact Canvas New Quizzes Next / Next-or-Submit button
+    const canvasNext = document.querySelector(
+      'button[data-automation="sdk-oqaat-next-or-submit-button"], button[data-automation*="next-or-submit"], button[data-automation*="next"]'
+    );
+    if (canvasNext && !canvasNext.closest('#__canvas_ai_host__') && canvasNext.offsetParent !== null && !canvasNext.disabled) {
+      return canvasNext;
+    }
+
     const candidates = Array.from(document.querySelectorAll('button, [role="button"], a, input[type="button"]')).filter(
       (el) => !el.closest('#__canvas_ai_host__') && el.offsetParent !== null
     );
@@ -1158,6 +1264,14 @@
   }
 
   function findPrevButton() {
+    // Priority 0: Exact Canvas New Quizzes Previous button
+    const canvasPrev = document.querySelector(
+      'button[data-automation="sdk-oqaat-previous-button"], button[data-automation*="previous"]'
+    );
+    if (canvasPrev && !canvasPrev.closest('#__canvas_ai_host__') && canvasPrev.offsetParent !== null && !canvasPrev.disabled) {
+      return canvasPrev;
+    }
+
     const candidates = Array.from(document.querySelectorAll('button, [role="button"], a, input[type="button"]')).filter(
       (el) => !el.closest('#__canvas_ai_host__') && el.offsetParent !== null
     );
@@ -1181,7 +1295,7 @@
   function getAllQuestionNavButtons() {
     const navContainers = Array.from(
       document.querySelectorAll(
-        '.lrn-questions-nav, .lrn_question_list, .lrn-item-list, [data-automation="question-nav"], nav, aside, [role="navigation"]'
+        '#quiz-react-sdk_sidebar-nav, [role="navigation"][aria-label*="Question" i], [role="navigation"][aria-label*="คำถาม" i], .lrn-questions-nav, .lrn_question_list, .lrn-item-list, [data-automation="question-nav"], nav, aside, [role="navigation"]'
       )
     ).filter((el) => !el.closest('#__canvas_ai_host__'));
 
@@ -1190,10 +1304,10 @@
 
     if (navContainers.length > 0) {
       navContainers.forEach((container) => {
-        candidateElements.push(...Array.from(container.querySelectorAll('button, [role="button"], a, li')));
+        candidateElements.push(...Array.from(container.querySelectorAll('a, button, [role="button"], li')));
       });
     } else {
-      candidateElements.push(...Array.from(document.querySelectorAll('[aria-label*="Question" i], [aria-label*="ข้อ" i]')));
+      candidateElements.push(...Array.from(document.querySelectorAll('[data-automation="sdk-sidebar-item-button"], [aria-label*="Question" i], [aria-label*="ข้อ" i]')));
     }
 
     candidateElements.forEach((el) => {
@@ -1203,16 +1317,30 @@
 
       const txt = (el.innerText || '').trim();
       const aria = (el.getAttribute('aria-label') || '').trim();
+      const itemId = el.getAttribute('data-automation-item-id') || '';
 
       if (/next|prev|submit|ถัดไป|ก่อนหน้า|ส่ง/i.test(txt) || /next|prev|submit/i.test(aria)) {
         return;
       }
 
       let qNum = null;
-      const ariaMatch = aria.match(/(?:question|ข้อที่|ข้อ)\s*(\d+)/i);
-      if (ariaMatch) {
-        qNum = parseInt(ariaMatch[1], 10);
-      } else if (/^\d{1,3}$/.test(txt)) {
+
+      // 1. Check data-automation-item-id suffix (e.g. "3801516_2")
+      const itemIdMatch = itemId.match(/_(\d+)$/);
+      if (itemIdMatch) {
+        qNum = parseInt(itemIdMatch[1], 10);
+      }
+
+      // 2. Check aria-label (e.g. "Question 2, unpinned, unanswered")
+      if (qNum === null) {
+        const ariaMatch = aria.match(/(?:question|ข้อที่|ข้อ)\s*(\d+)/i);
+        if (ariaMatch) {
+          qNum = parseInt(ariaMatch[1], 10);
+        }
+      }
+
+      // 3. Check exact digits in text
+      if (qNum === null && /^\d{1,3}$/.test(txt)) {
         const n = parseInt(txt, 10);
         if (n >= 1 && n <= 200) {
           qNum = n;
@@ -1228,11 +1356,19 @@
   }
 
   function findQuestionNavButton(targetNum) {
+    // Priority 0: Exact Canvas New Quizzes sidebar button by item ID suffix (e.g. data-automation-item-id="3801516_2")
+    const canvasNavBtn = document.querySelector(
+      `a[data-automation="sdk-sidebar-item-button"][data-automation-item-id$="_${targetNum}"], button[data-automation="sdk-sidebar-item-button"][data-automation-item-id$="_${targetNum}"]`
+    );
+    if (canvasNavBtn && !canvasNavBtn.closest('#__canvas_ai_host__')) {
+      return canvasNavBtn;
+    }
+
     const navMap = getAllQuestionNavButtons();
     if (navMap.has(targetNum)) return navMap.get(targetNum);
 
     const ariaMatch = document.querySelector(
-      `[aria-label="Question ${targetNum}" i], [aria-label="ข้อ ${targetNum}" i], [aria-label="ข้อที่ ${targetNum}" i], [data-item-order="${targetNum}"], [data-question-order="${targetNum}"]`
+      `[aria-label="Question ${targetNum}" i], [aria-label^="Question ${targetNum}," i], [aria-label="ข้อ ${targetNum}" i], [aria-label="ข้อที่ ${targetNum}" i], [data-item-order="${targetNum}"], [data-question-order="${targetNum}"]`
     );
     if (ariaMatch && !ariaMatch.closest('#__canvas_ai_host__')) return ariaMatch;
 

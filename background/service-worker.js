@@ -190,8 +190,8 @@ async function solveSmartHybrid(payload, apiKey) {
 
     // Check if question contains Thai characters
     const hasThai = /[\u0E00-\u0E7F]/.test(q.text);
-    // Jev Decisions API is optimized for English choice tasks; on Thai questions, require >= 0.92 confidence or route to Grok 4.6
-    const threshold = hasThai ? 0.92 : CONF_THRESHOLD;
+    // Jev Decisions API is optimized for English choice tasks; on Thai questions, require >= 0.98 confidence or route to Grok 4.6
+    const threshold = hasThai ? 0.98 : CONF_THRESHOLD;
 
     if (jevFailed || isNaN(choiceInt) || conf < threshold) {
       questionsForFallback.push(q);
