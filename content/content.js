@@ -135,6 +135,7 @@
   function cleanStem(txt) {
     if (!txt) return '';
     return txt
+      .replace(/Question at position \d+/gi, '')
       .replace(/Multiple choice/gi, '')
       .replace(/\d+(\.\d+)?\s*points?/gi, '')
       .replace(/\d+\s*\/\s*\d+\s*points?/gi, '')
@@ -261,7 +262,9 @@
 
     // Strategy 1: Check if container stem matches a question already in answerCache with a known question number
     if (container) {
-      const promptEl = container.querySelector('[class*="stimulus"], [class*="prompt"], [class*="text"], legend, h2, h3, h4');
+      const promptEl = container.querySelector(
+        '.lrn_stimulus_content, .lrn_stimulus, [class*="stimulus"], .lrn_question_text, [class*="prompt"], .question_text, h2, h3, h4'
+      );
       const rawText = promptEl ? promptEl.innerText : container.innerText;
       const stem = cleanStem(rawText);
       if (stem && stem.length > 5) {
@@ -423,24 +426,84 @@
 
       // Extract Question Stem
       let stemText = '';
-      const legend = container.querySelector('legend');
-      if (legend) {
-        stemText = legend.innerText;
-      } else {
-        const promptEl = container.querySelector('[class*="stimulus"], [class*="prompt"], [class*="text"], h2, h3, h4');
-        if (promptEl) {
-          stemText = promptEl.innerText;
-        } else {
-          const clone = container.cloneNode(true);
-          clone.querySelectorAll('label, input, button, [role="radio"]').forEach((el) => el.remove());
-          stemText = clone.innerText;
+
+      // Priority 1: Dedicated Learnosity / Canvas Stimulus & Prompt selectors
+      const promptSelectors = [
+        '.lrn_stimulus_content',
+        '.lrn_stimulus',
+        '[class*="stimulus"]',
+        '.lrn_question_text',
+        '.lrn-prompt',
+        '[class*="prompt"]',
+        '.question_text',
+        '[data-automation="question-prompt"]',
+        '.display_question .question_text'
+      ];
+
+      for (const sel of promptSelectors) {
+        const el = container.querySelector(sel);
+        if (el) {
+          const txt = cleanStem(el.innerText);
+          if (txt && txt.length >= 3 && !txt.toLowerCase().includes('question at position')) {
+            stemText = txt;
+            break;
+          }
         }
       }
 
-      stemText = cleanStem(stemText);
+      // Priority 2: Headings inside container
+      if (!stemText) {
+        const headings = container.querySelectorAll('h1, h2, h3, h4, h5');
+        for (const h of headings) {
+          const txt = cleanStem(h.innerText);
+          if (txt && txt.length >= 3 && !txt.toLowerCase().includes('question at position')) {
+            stemText = txt;
+            break;
+          }
+        }
+      }
+
+      // Priority 3: Paragraphs or divs before the options
+      if (!stemText) {
+        const paragraphs = container.querySelectorAll('p, div');
+        for (const p of paragraphs) {
+          if (p.closest('label, button, [role="radio"], [role="button"], #__canvas_ai_host__, fieldset')) continue;
+          const txt = cleanStem(p.innerText);
+          if (txt && txt.length >= 6 && !txt.toLowerCase().includes('question at position')) {
+            const isOption = radios.some((r) => {
+              const l = r.closest('label') || r.parentElement;
+              return l && l.innerText && l.innerText.includes(txt);
+            });
+            if (!isOption) {
+              stemText = txt;
+              break;
+            }
+          }
+        }
+      }
+
+      // Priority 4: Clone container and remove labels, inputs, radios, buttons, legends, badges
+      if (!stemText) {
+        const clone = container.cloneNode(true);
+        clone.querySelectorAll('label, input, button, [role="radio"], legend, [class*="points"], [class*="badge"], .lrn_sr_only, .sr-only').forEach((el) => el.remove());
+        stemText = cleanStem(clone.innerText);
+      }
+
+      // Fallback 5: Check parent element if container was too narrowly scoped
       if (!stemText || stemText.length < 5 || stemText.toLowerCase().includes('question at position')) {
-        const prevHeading = container.parentElement ? container.parentElement.querySelector('h1, h2, h3, [class*="stimulus"], [class*="prompt"]') : null;
-        if (prevHeading) stemText = cleanStem(prevHeading.innerText);
+        const parent = container.parentElement;
+        if (parent) {
+          for (const sel of promptSelectors) {
+            const el = parent.querySelector(sel);
+            if (el) {
+              const txt = cleanStem(el.innerText);
+              if (txt && txt.length >= 3 && !txt.toLowerCase().includes('question at position')) {
+                stemText = txt;
+                break;
+              }
+            }
+          }
+        }
       }
 
       // Extract Options
@@ -732,6 +795,7 @@
 
     const mode = detectQuizMode();
     let questionsToProcess = [];
+    let totalCount = 20;
 
     if (mode === 'ALL_IN_ONE') {
       // CASE 1: ALL QUESTIONS ARE ALREADY ON THIS ONE PAGE!
@@ -742,11 +806,11 @@
       // CASE 2: ONE AT A TIME (PAGINATED)
       updateStatus('🔍 กำลังกวาดข้อสอบทีละข้อจากแถบตัวเลข/ปุ่มถัดไป...');
       const navMap = getAllQuestionNavButtons();
-      const total = navMap.size > 0 ? navMap.size : 20;
+      totalCount = navMap.size > 0 ? navMap.size : 20;
       let prevStem = '';
 
       // Read Question 1
-      updateStatus(`⚡ กำลังกวาดข้อสอบ: ข้อที่ 1/${total}...`);
+      updateStatus(`⚡ กำลังกวาดข้อสอบ: ข้อที่ 1/${totalCount}...`);
       let q1 = null;
       for (let attempt = 0; attempt < 10; attempt++) {
         const qList = await scrapeAllQuestionsOnPage();
@@ -764,9 +828,9 @@
       }
 
       // Sequential crawling for Questions 2..total
-      for (let qNum = 2; qNum <= total; qNum++) {
+      for (let qNum = 2; qNum <= totalCount; qNum++) {
         if (!isHarvesting) break;
-        updateStatus(`⚡ กำลังกวาดข้อสอบ: ข้อที่ ${qNum}/${total}...`);
+        updateStatus(`⚡ กำลังกวาดข้อสอบ: ข้อที่ ${qNum}/${totalCount}...`);
 
         let qCandidate = null;
         const navBtn = findQuestionNavButton(qNum);
@@ -839,7 +903,7 @@
         if (btn1) {
           await performClick(btn1);
         } else {
-          for (let p = 0; p < total; p++) {
+          for (let p = 0; p < totalCount; p++) {
             const prevBtn = findPrevButton();
             if (!prevBtn || prevBtn.disabled) break;
             await performClick(prevBtn);
@@ -911,7 +975,7 @@
         if (btn1) {
           await performClick(btn1);
         } else {
-          for (let p = 0; p < total; p++) {
+          for (let p = 0; p < totalCount; p++) {
             const prevBtn = findPrevButton();
             if (!prevBtn || prevBtn.disabled) break;
             await performClick(prevBtn);
